@@ -1,11 +1,11 @@
 [package]
 name = "rayon_croissant"
-version = "0.1.0" # don't forget to update documentation link on bump
+version = "0.1.1" # don't forget to update documentation link on bump
 authors = ["Anthony Ramine <n.oxyde@gmail.com>"]
 description = "<lqd> bikeshedding the name: something that is mapped folded and collected, a 🥐"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/nox/rayon_croissant"
-documentation = "https://docs.rs/rayon_croissant/0.1.0/"
+documentation = "https://docs.rs/rayon_croissant/0.1.1/"
 readme = "README.md"
 categories = ["concurrency", "data-structures"]
 keywords = ["arc", "split", "atomic", "thread"]

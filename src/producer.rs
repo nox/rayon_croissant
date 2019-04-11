@@ -196,6 +196,7 @@ where
         let input = self.input_iter.next_back()?;
         let mut singleton = Target::default();
         let output = (self.mapfold)(&mut singleton, input);
+        mem::swap(&mut self.back_sink, &mut singleton);
         (self.reduce)(&mut self.back_sink, singleton);
         Some(output)
     }
