@@ -11,9 +11,10 @@ use Sink;
 /// A mapfold-reduce consumer.
 ///
 /// Used by `MapfoldReduce` when wrapping a consumer-based parallel iterator.
-pub struct MapfoldReduceConsumer<'t, Accumulator, Mapfold, Reduce, OutputConsumer> {
+pub struct MapfoldReduceConsumer<'t, Accumulator, Mapfold, Init, Reduce, OutputConsumer> {
     sink: Sink<'t, Accumulator>,
     mapfold: Mapfold,
+    init: Init,
     reduce: Reduce,
     output_consumer: OutputConsumer,
 }
@@ -34,31 +35,34 @@ pub struct MapfoldReduceResult<'t, Accumulator, Output> {
     output: Output,
 }
 
-impl<'t, Accumulator, Mapfold, Reduce, OutputConsumer>
-    MapfoldReduceConsumer<'t, Accumulator, Mapfold, Reduce, OutputConsumer>
+impl<'t, Accumulator, Mapfold, Init, Reduce, OutputConsumer>
+    MapfoldReduceConsumer<'t, Accumulator, Mapfold, Init, Reduce, OutputConsumer>
 {
     pub fn new(
         accumulator: &'t mut Accumulator,
         mapfold: Mapfold,
+        init: Init,
         reduce: Reduce,
         output_consumer: OutputConsumer,
     ) -> Self {
         MapfoldReduceConsumer {
             sink: Sink::Borrowed(accumulator),
             mapfold,
+            init,
             reduce,
             output_consumer,
         }
     }
 }
 
-impl<'t, Output, Accumulator, Input, Mapfold, Reduce, OutputConsumer> Consumer<Input>
-    for MapfoldReduceConsumer<'t, Accumulator, Mapfold, Reduce, OutputConsumer>
+impl<'t, Output, Accumulator, Input, Mapfold, Init, Reduce, OutputConsumer> Consumer<Input>
+    for MapfoldReduceConsumer<'t, Accumulator, Mapfold, Init, Reduce, OutputConsumer>
 where
     Output: Send,
-    Accumulator: Default + Send + 't,
+    Accumulator: Send + 't,
     Input: Send,
     Mapfold: Clone + Fn(&mut Accumulator, Input) -> Output + Send,
+    Init: Clone + Send + Fn() -> Accumulator,
     Reduce: Clone + Fn(&mut Accumulator, Accumulator) + Send,
     OutputConsumer: Consumer<Output>,
 {
@@ -69,7 +73,7 @@ where
     /// Splits the consumer in two.
     ///
     /// The existing sink is put in the left consumer and the right one
-    /// gets a new owned one initialised from `Accumulator::default()`. This ensures
+    /// gets a new owned one initialised from `init()`. This ensures
     /// that the mutable reference to the final accumulator is always in the
     /// left-most consumer.
     fn split_at(self, index: usize) -> (Self, Self, Self::Reducer) {
@@ -78,12 +82,14 @@ where
         let left_consumer = MapfoldReduceConsumer {
             sink: self.sink,
             mapfold: self.mapfold.clone(),
+            init: self.init.clone(),
             reduce: self.reduce.clone(),
             output_consumer: left_output_consumer,
         };
         let right_consumer = MapfoldReduceConsumer {
-            sink: Sink::Owned(Accumulator::default()),
+            sink: Sink::Owned((self.init)()),
             mapfold: self.mapfold,
+            init: self.init,
             reduce: self.reduce.clone(),
             output_consumer: right_output_consumer,
         };
@@ -107,21 +113,23 @@ where
     }
 }
 
-impl<'t, Output, Accumulator, Input, Mapfold, Reduce, OutputConsumer> UnindexedConsumer<Input>
-    for MapfoldReduceConsumer<'t, Accumulator, Mapfold, Reduce, OutputConsumer>
+impl<'t, Output, Accumulator, Input, Mapfold, Init, Reduce, OutputConsumer> UnindexedConsumer<Input>
+    for MapfoldReduceConsumer<'t, Accumulator, Mapfold, Init, Reduce, OutputConsumer>
 where
     Output: Send,
-    Accumulator: Default + Send + 't,
+    Accumulator: Send + 't,
     Input: Send,
     Mapfold: Clone + Fn(&mut Accumulator, Input) -> Output + Send,
+    Init: Clone + Send + Fn() -> Accumulator,
     Reduce: Clone + Fn(&mut Accumulator, Accumulator) + Send,
     OutputConsumer: UnindexedConsumer<Output>,
 {
     /// See `split_at`.
     fn split_off_left(&self) -> Self {
         MapfoldReduceConsumer {
-            sink: Sink::Owned(Accumulator::default()),
+            sink: Sink::Owned((self.init)()),
             mapfold: self.mapfold.clone(),
+            init: self.init.clone(),
             reduce: self.reduce.clone(),
             output_consumer: self.output_consumer.split_off_left(),
         }
@@ -163,7 +171,8 @@ where
     }
 }
 
-impl<'t, Output, Accumulator, Reduce, OutputReducer> Reducer<MapfoldReduceResult<'t, Accumulator, Output>>
+impl<'t, Output, Accumulator, Reduce, OutputReducer>
+    Reducer<MapfoldReduceResult<'t, Accumulator, Output>>
     for MapfoldReduceReducer<Reduce, OutputReducer>
 where
     Accumulator: Send + 't,

@@ -1,7 +1,7 @@
 extern crate rayon;
 extern crate rayon_croissant;
 
-use rayon::prelude::{ParallelIterator, IndexedParallelIterator, IntoParallelRefIterator};
+use rayon::prelude::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
 use rayon_croissant::ParallelIteratorExt;
 
 #[test]
@@ -21,6 +21,7 @@ fn test_zip_rev() {
                 names.push(name);
                 score
             },
+            Default::default,
             |left_names, mut right_names| {
                 left_names.append(&mut right_names);
             },

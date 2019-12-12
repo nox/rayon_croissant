@@ -10,32 +10,36 @@ use std::ops::Drop;
 
 use Sink;
 
-pub struct MapfoldReduceCallback<'t, Accumulator: 't, Mapfold, Reduce, OutputCallback> {
+pub struct MapfoldReduceCallback<'t, Accumulator: 't, Mapfold, Init, Reduce, OutputCallback> {
     accumulator: &'t mut Accumulator,
     mapfold: Mapfold,
     reduce: Reduce,
+    init: Init,
     output_callback: OutputCallback,
 }
 
 struct MapfoldReduceProducer<
     't,
-    Accumulator: Default + 't,
+    Accumulator: 't,
     InputProducer,
     Mapfold,
+    Init,
     Reduce: Fn(&mut Accumulator, Accumulator),
 > {
     sink: Sink<'t, Accumulator>,
     part: Option<Part<'t, Accumulator, Reduce>>,
     input_producer: InputProducer,
     mapfold: Mapfold,
+    init: Init,
     reduce: Reduce,
 }
 
 struct MapfoldReduceProducerIter<
     't,
-    Accumulator: Default + 't,
+    Accumulator: 't,
     Input,
     Mapfold,
+    Init: Fn() -> Accumulator,
     Reduce: Fn(&mut Accumulator, Accumulator),
 > {
     front_sink: Sink<'t, Accumulator>,
@@ -43,6 +47,7 @@ struct MapfoldReduceProducerIter<
     part: Option<Part<'t, Accumulator, Reduce>>,
     input_iter: Input,
     mapfold: Mapfold,
+    init: Init,
     reduce: Reduce,
 }
 
@@ -58,31 +63,34 @@ struct Joiner<'t, Accumulator: 't, Reduce: Fn(&mut Accumulator, Accumulator)> {
     parent: Option<Part<'t, Accumulator, Reduce>>,
 }
 
-impl<'t, Accumulator, Mapfold, Reduce, OutputCallback>
-    MapfoldReduceCallback<'t, Accumulator, Mapfold, Reduce, OutputCallback>
+impl<'t, Accumulator, Mapfold, Reduce, Init, OutputCallback>
+    MapfoldReduceCallback<'t, Accumulator, Mapfold, Init, Reduce, OutputCallback>
 {
     pub fn new(
         accumulator: &'t mut Accumulator,
         mapfold: Mapfold,
+        init: Init,
         reduce: Reduce,
         output_callback: OutputCallback,
     ) -> Self {
         MapfoldReduceCallback {
             accumulator,
             mapfold,
+            init,
             reduce,
             output_callback,
         }
     }
 }
 
-impl<'t, Output, Accumulator, Input, Mapfold, Reduce, OutputCallback> ProducerCallback<Input>
-    for MapfoldReduceCallback<'t, Accumulator, Mapfold, Reduce, OutputCallback>
+impl<'t, Output, Accumulator, Input, Mapfold, Init, Reduce, OutputCallback> ProducerCallback<Input>
+    for MapfoldReduceCallback<'t, Accumulator, Mapfold, Init, Reduce, OutputCallback>
 where
     Output: Send,
-    Accumulator: Default + Send + 't,
+    Accumulator: Send + 't,
     Input: Send,
     Mapfold: Clone + Fn(&mut Accumulator, Input) -> Output + Send,
+    Init: Clone + Fn() -> Accumulator + Send,
     Reduce: Clone + Fn(&mut Accumulator, Accumulator) + Send,
     OutputCallback: ProducerCallback<Output>,
 {
@@ -96,31 +104,35 @@ where
             sink: Sink::Borrowed(self.accumulator),
             part: None,
             input_producer,
-            mapfold: self.mapfold.clone(),
-            reduce: self.reduce.clone(),
+            mapfold: self.mapfold,
+            init: self.init,
+            reduce: self.reduce,
         })
     }
 }
 
-impl<'t, Output, Accumulator, InputProducer, Mapfold, Reduce> Producer
-    for MapfoldReduceProducer<'t, Accumulator, InputProducer, Mapfold, Reduce>
+impl<'t, Output, Accumulator, InputProducer, Mapfold, Init, Reduce> Producer
+    for MapfoldReduceProducer<'t, Accumulator, InputProducer, Mapfold, Init, Reduce>
 where
     Output: Send,
-    Accumulator: Default + Send + 't,
+    Accumulator: Send + 't,
     InputProducer: Producer,
     Mapfold: Clone + Fn(&mut Accumulator, InputProducer::Item) -> Output + Send,
+    Init: Clone + Fn() -> Accumulator + Send,
     Reduce: Clone + Fn(&mut Accumulator, Accumulator) + Send,
 {
     type Item = Output;
-    type IntoIter = MapfoldReduceProducerIter<'t, Accumulator, InputProducer::IntoIter, Mapfold, Reduce>;
+    type IntoIter =
+        MapfoldReduceProducerIter<'t, Accumulator, InputProducer::IntoIter, Mapfold, Init, Reduce>;
 
     fn into_iter(self) -> Self::IntoIter {
         MapfoldReduceProducerIter {
             front_sink: self.sink,
-            back_sink: Accumulator::default(),
+            back_sink: (self.init)(),
             part: self.part,
             input_iter: self.input_producer.into_iter(),
             mapfold: self.mapfold,
+            init: self.init,
             reduce: self.reduce,
         }
     }
@@ -148,26 +160,29 @@ where
             part: Some(Part::Left(left_part)),
             input_producer: left_input_producer,
             mapfold: self.mapfold.clone(),
+            init: self.init.clone(),
             reduce: self.reduce.clone(),
         };
         let right_producer = MapfoldReduceProducer {
-            sink: Sink::Owned(Accumulator::default()),
+            sink: Sink::Owned((self.init)()),
             part: Some(Part::Right(right_part)),
             input_producer: right_input_producer,
             mapfold: self.mapfold,
+            init: self.init,
             reduce: self.reduce,
         };
         (left_producer, right_producer)
     }
 }
 
-impl<'t, Output, Accumulator, Input, Mapfold, Reduce> Iterator
-    for MapfoldReduceProducerIter<'t, Accumulator, Input, Mapfold, Reduce>
+impl<'t, Output, Accumulator, Input, Mapfold, Init, Reduce> Iterator
+    for MapfoldReduceProducerIter<'t, Accumulator, Input, Mapfold, Init, Reduce>
 where
     Output: Send,
-    Accumulator: Default + Send + 't,
+    Accumulator: Send + 't,
     Input: Iterator,
     Mapfold: Clone + Fn(&mut Accumulator, Input::Item) -> Output + Send,
+    Init: Clone + Fn() -> Accumulator + Send,
     Reduce: Clone + Fn(&mut Accumulator, Accumulator) + Send,
 {
     type Item = Output;
@@ -183,18 +198,19 @@ where
     }
 }
 
-impl<'t, Output, Accumulator, Input, Mapfold, Reduce> DoubleEndedIterator
-    for MapfoldReduceProducerIter<'t, Accumulator, Input, Mapfold, Reduce>
+impl<'t, Output, Accumulator, Input, Mapfold, Init, Reduce> DoubleEndedIterator
+    for MapfoldReduceProducerIter<'t, Accumulator, Input, Mapfold, Init, Reduce>
 where
     Output: Send,
-    Accumulator: Default + Send + 't,
+    Accumulator: Send + 't,
     Input: DoubleEndedIterator,
     Mapfold: Clone + Fn(&mut Accumulator, Input::Item) -> Output + Send,
+    Init: Clone + Fn() -> Accumulator + Send,
     Reduce: Clone + Fn(&mut Accumulator, Accumulator) + Send,
 {
     fn next_back(&mut self) -> Option<Self::Item> {
         let input = self.input_iter.next_back()?;
-        let mut singleton = Accumulator::default();
+        let mut singleton = (self.init)();
         let output = (self.mapfold)(&mut singleton, input);
         mem::swap(&mut self.back_sink, &mut singleton);
         (self.reduce)(&mut self.back_sink, singleton);
@@ -202,13 +218,14 @@ where
     }
 }
 
-impl<'t, Output, Accumulator, Input, Mapfold, Reduce> ExactSizeIterator
-    for MapfoldReduceProducerIter<'t, Accumulator, Input, Mapfold, Reduce>
+impl<'t, Output, Accumulator, Input, Mapfold, Init, Reduce> ExactSizeIterator
+    for MapfoldReduceProducerIter<'t, Accumulator, Input, Mapfold, Init, Reduce>
 where
     Output: Send,
-    Accumulator: Default + Send + 't,
+    Accumulator: Send + 't,
     Input: ExactSizeIterator,
     Mapfold: Clone + Fn(&mut Accumulator, Input::Item) -> Output + Send,
+    Init: Clone + Fn() -> Accumulator + Send,
     Reduce: Clone + Fn(&mut Accumulator, Accumulator) + Send,
 {
     fn len(&self) -> usize {
@@ -216,15 +233,16 @@ where
     }
 }
 
-impl<'t, Accumulator, Input, Mapfold, Reduce> Drop
-    for MapfoldReduceProducerIter<'t, Accumulator, Input, Mapfold, Reduce>
+impl<'t, Accumulator, Input, Mapfold, Init, Reduce> Drop
+    for MapfoldReduceProducerIter<'t, Accumulator, Input, Mapfold, Init, Reduce>
 where
-    Accumulator: Default + 't,
+    Accumulator: 't,
+    Init: Fn() -> Accumulator,
     Reduce: Fn(&mut Accumulator, Accumulator),
 {
     fn drop(&mut self) {
-        let mut front_sink = mem::replace(&mut self.front_sink, Sink::Owned(Accumulator::default()));
-        let back_sink = mem::replace(&mut self.back_sink, Accumulator::default());
+        let mut front_sink = mem::replace(&mut self.front_sink, Sink::Owned((self.init)()));
+        let back_sink = mem::replace(&mut self.back_sink, (self.init)());
         (self.reduce)(front_sink.as_mut(), back_sink);
 
         if let Some(split) = self.part.take() {
