@@ -76,8 +76,8 @@ pub trait ParallelIteratorExt: ParallelIterator {
     where
         Output: Send,
         Target: Default + Send + 't,
-        Mapfold: Clone + Fn(&mut Target, Self::Item) -> Output,
-        Reduce: Clone + Fn(&mut Target, Target),
+        Mapfold: Clone + Fn(&mut Target, Self::Item) -> Output + Send,
+        Reduce: Clone + Fn(&mut Target, Target) + Send,
     {
         MapfoldReduce {
             target: target,
