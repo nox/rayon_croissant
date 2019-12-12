@@ -30,7 +30,7 @@ mod producer;
 pub trait ParallelIteratorExt: ParallelIterator {
     /// Applies `mapfold` to each item of this iterator, producing a new iterator
     /// with the `Output` results, while folding and reducing each intermediate
-    /// `Target` to `target`.
+    /// `Accumulator` to `accumulator`.
     ///
     /// # Example
     ///
@@ -60,6 +60,7 @@ pub trait ParallelIteratorExt: ParallelIterator {
     ///             }
     ///             len
     ///         },
+    ///         Default::default,
     ///         |left, mut right| left.append(&mut right),
     ///     )
     ///     .collect::<Vec<_>>();
@@ -67,23 +68,26 @@ pub trait ParallelIteratorExt: ParallelIterator {
     /// assert_eq!(ingredients_lengths, [8, 6, 6, 7]);
     /// assert_eq!(ingredients_indices_with_odd_length, [3]);
     /// ```
-    fn mapfold_reduce_into<'t, Output, Target, Mapfold, Reduce>(
+    fn mapfold_reduce_into<'acc, Output, Accumulator, Mapfold, Init, Reduce>(
         self,
-        target: &'t mut Target,
+        accumulator: &'acc mut Accumulator,
         mapfold: Mapfold,
+        init: Init,
         reduce: Reduce,
-    ) -> MapfoldReduce<'t, Target, Self, Mapfold, Reduce>
+    ) -> MapfoldReduce<'acc, Accumulator, Self, Mapfold, Init, Reduce>
     where
         Output: Send,
-        Target: Default + Send + 't,
-        Mapfold: Clone + Fn(&mut Target, Self::Item) -> Output + Send,
-        Reduce: Clone + Fn(&mut Target, Target) + Send,
+        Accumulator: Send + 'acc,
+        Mapfold: Clone + Send + Fn(&mut Accumulator, Self::Item) -> Output,
+        Init: Clone + Send + Fn() -> Accumulator,
+        Reduce: Clone + Send + Fn(&mut Accumulator, Accumulator),
     {
         MapfoldReduce {
-            target: target,
+            accumulator,
             input: self,
-            mapfold: mapfold,
-            reduce: reduce,
+            mapfold,
+            init,
+            reduce,
         }
     }
 }
@@ -96,21 +100,23 @@ impl<Input> ParallelIteratorExt for Input where Input: ParallelIterator {}
 ///
 /// [`mapfold_reduce_into()`]: trait.ParallelIteratorExt.html#method.mapfold_reduce_into
 /// [`ParallelIteratorExt`]: trait.ParallelIteratorExt.html
-pub struct MapfoldReduce<'t, Target: 't, Input, Mapfold, Reduce> {
-    target: &'t mut Target,
+pub struct MapfoldReduce<'acc, Accumulator: 'acc, Input, Mapfold, Init, Reduce> {
+    accumulator: &'acc mut Accumulator,
     input: Input,
     mapfold: Mapfold,
+    init: Init,
     reduce: Reduce,
 }
 
-impl<'t, Output, Target, Input, Mapfold, Reduce> ParallelIterator
-    for MapfoldReduce<'t, Target, Input, Mapfold, Reduce>
+impl<'acc, Output, Accumulator, Input, Mapfold, Init, Reduce> ParallelIterator
+    for MapfoldReduce<'acc, Accumulator, Input, Mapfold, Init, Reduce>
 where
     Output: Send,
-    Target: Default + Send + 't,
+    Accumulator: Send + 'acc,
     Input: ParallelIterator,
-    Mapfold: Clone + Fn(&mut Target, Input::Item) -> Output + Send,
-    Reduce: Clone + Fn(&mut Target, Target) + Send,
+    Mapfold: Clone + Fn(&mut Accumulator, Input::Item) -> Output + Send,
+    Init: Clone + Send + Fn() -> Accumulator,
+    Reduce: Clone + Fn(&mut Accumulator, Accumulator) + Send,
 {
     type Item = Output;
 
@@ -118,8 +124,13 @@ where
     where
         C: UnindexedConsumer<Output>,
     {
-        let iter_consumer =
-            consumer::MapfoldReduceConsumer::new(self.target, self.mapfold, self.reduce, consumer);
+        let iter_consumer = consumer::MapfoldReduceConsumer::new(
+            self.accumulator,
+            self.mapfold,
+            self.init,
+            self.reduce,
+            consumer,
+        );
         self.input.drive_unindexed(iter_consumer).into_output()
     }
 
@@ -128,14 +139,15 @@ where
     }
 }
 
-impl<'t, Output, Target, Input, Mapfold, Reduce> IndexedParallelIterator
-    for MapfoldReduce<'t, Target, Input, Mapfold, Reduce>
+impl<'acc, Output, Accumulator, Input, Mapfold, Init, Reduce> IndexedParallelIterator
+    for MapfoldReduce<'acc, Accumulator, Input, Mapfold, Init, Reduce>
 where
     Input: IndexedParallelIterator,
-    Target: Default + Send + 't,
+    Accumulator: Send + 'acc,
     Output: Send,
-    Mapfold: Clone + Fn(&mut Target, Input::Item) -> Output + Send,
-    Reduce: Clone + Fn(&mut Target, Target) + Send,
+    Mapfold: Clone + Fn(&mut Accumulator, Input::Item) -> Output + Send,
+    Init: Clone + Send + Fn() -> Accumulator,
+    Reduce: Clone + Fn(&mut Accumulator, Accumulator) + Send,
 {
     fn len(&self) -> usize {
         self.input.len()
@@ -145,8 +157,13 @@ where
     where
         C: Consumer<Output>,
     {
-        let iter_consumer =
-            consumer::MapfoldReduceConsumer::new(self.target, self.mapfold, self.reduce, consumer);
+        let iter_consumer = consumer::MapfoldReduceConsumer::new(
+            self.accumulator,
+            self.mapfold,
+            self.init,
+            self.reduce,
+            consumer,
+        );
         self.input.drive(iter_consumer).into_output()
     }
 
@@ -156,8 +173,9 @@ where
     {
         self.input
             .with_producer(producer::MapfoldReduceCallback::new(
-                self.target,
+                self.accumulator,
                 self.mapfold,
+                self.init,
                 self.reduce,
                 callback,
             ))
